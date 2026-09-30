@@ -12,6 +12,7 @@ import argparse
 import json
 import math
 import os
+import re
 import sys
 import time
 from datetime import datetime
@@ -35,6 +36,9 @@ EFFORT_COLORS = {
     'xhigh': f'{E}[35m',
     'max': f'{E}[1;95m',
 }
+
+ALIASES = ('fable', 'opus', 'sonnet', 'haiku')
+MODEL_ID = re.compile(r'claude-([a-z]+)-([0-9]{1,2})(?:-([0-9]{1,2}))?(?:-[0-9]{8})?')
 
 # STATUSLINE_NOW (unix seconds) pins the clock for tests
 NOW = int(os.environ['STATUSLINE_NOW']) if os.environ.get('STATUSLINE_NOW') else int(time.time())
@@ -94,6 +98,60 @@ def format_tokens(n):
     return f'{t // 10}.{t % 10}{unit}'
 
 
+def env_truthy(name):
+    return os.environ.get(name, '').strip(' \t\r\n').lower() in ('1', 'true', 'yes', 'on')
+
+
+def read_settings_file(path):
+    """Parsed settings file, or None if it's missing, unreadable or not a JSON object."""
+    try:
+        with open(path, encoding='utf-8-sig') as f:
+            settings = json.load(f)
+    except Exception:
+        return None
+    return settings if isinstance(settings, dict) else None
+
+
+def advisor_setting(data):
+    """advisorModel in Claude Code's settings order; None means off.
+
+    Claude Code doesn't send the advisor to status line scripts, so it's read from the same
+    files Claude Code reads. The first file that has the key decides, even if its value is null.
+    """
+    if env_truthy('CLAUDE_CODE_DISABLE_ADVISOR_TOOL'):
+        return None
+    paths = []
+    workspace = data.get('workspace')
+    project = workspace.get('project_dir') if isinstance(workspace, dict) else None
+    if isinstance(project, str) and project:
+        paths += [os.path.join(project, '.claude', 'settings.local.json'),
+                  os.path.join(project, '.claude', 'settings.json')]
+    config = os.environ.get('CLAUDE_CONFIG_DIR') or os.path.join(os.path.expanduser('~'), '.claude')
+    paths.append(os.path.join(config, 'settings.json'))
+    for path in paths:
+        settings = read_settings_file(path)
+        if settings is None or 'advisorModel' not in settings:
+            continue
+        value = settings['advisorModel']
+        if isinstance(value, str) and value.strip(' \t\r\n'):
+            return value.strip(' \t\r\n')
+        return None
+    return None
+
+
+def format_model_id(value):
+    """fable -> Fable, claude-opus-5-5 -> Opus 5.5, anything else as-is."""
+    low = value.lower()
+    m = MODEL_ID.fullmatch(low)
+    if low in ALIASES:
+        family, version = low, ''
+    elif m:
+        family, version = m[1], f' {m[2]}' + (f'.{m[3]}' if m[3] else '')
+    else:
+        return value
+    return family[:1].upper() + family[1:] + version
+
+
 def format_limit(name, limit, window, time_format):
     if not isinstance(limit, dict) or limit.get('used_percentage') is None:
         return None
@@ -126,7 +184,12 @@ def build(data, label):
         val = f'{c}{level}{RESET}' if c else level
         parts.append(f'{DIM}effort:{RESET} {val}')
 
-    # 3. Context window usage
+    # 3. Advisor (Claude Code doesn't send it, so read it from the settings files)
+    advisor = advisor_setting(data)
+    val = f'{BOLD_CYAN}{format_model_id(advisor)}{RESET}' if advisor else f'{DIM}off{RESET}'
+    parts.append(f'{DIM}advisor:{RESET} {val}')
+
+    # 4. Context window usage
     cw = data.get('context_window')
     if isinstance(cw, dict) and cw.get('used_percentage') is not None:
         pct = round(float(cw['used_percentage']))
@@ -136,7 +199,7 @@ def build(data, label):
             seg += f' {DIM}({format_tokens(used)}/{format_tokens(total)}){RESET}'
         parts.append(seg)
 
-    # 4 & 5. Rate limits (5-hour session + 7-day weekly)
+    # 5 & 6. Rate limits (5-hour session + 7-day weekly)
     rl = data.get('rate_limits')
     if isinstance(rl, dict):
         for seg in (format_limit('5h', rl.get('five_hour'), 18000, '%H:%M'),

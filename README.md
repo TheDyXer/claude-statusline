@@ -1,6 +1,6 @@
 # claude-statusline
 
-A status line for [Claude Code](https://code.claude.com/docs/en/statusline) that shows your model, effort level, context usage, and your 5-hour and weekly usage limits.
+A status line for [Claude Code](https://code.claude.com/docs/en/statusline) that shows your model, effort level, [advisor](https://code.claude.com/docs/en/advisor), context usage, and your 5-hour and weekly usage limits.
 
 The usage limits are colored by **pace**, not just by how high the number is. They turn red when you're on track to run out before the limit resets. 60% used on the last day of the week is fine, but 45% on the first day is not.
 
@@ -16,7 +16,7 @@ Install the status line from https://github.com/TheDyXer/claude-statusline for m
 1. Pick the script for this machine. If Python 3 is available (python3, or python / py on Windows), use statusline.py. Otherwise, on Windows, use statusline.ps1.
    https://raw.githubusercontent.com/TheDyXer/claude-statusline/main/statusline.py
    https://raw.githubusercontent.com/TheDyXer/claude-statusline/main/statusline.ps1
-2. Download it into my Claude config folder (~/.claude, which is %USERPROFILE%\.claude on Windows). Read it before saving: it should only read JSON from stdin and print one line.
+2. Download it into my Claude config folder (~/.claude, which is %USERPROFILE%\.claude on Windows). Read it before saving: it should only read JSON from stdin and Claude Code's settings files, and print one line.
 3. Back up ~/.claude/settings.json, then set only its "statusLine" key and keep everything else:
    "statusLine": { "type": "command", "command": "<command>", "refreshInterval": 30 }
    Use absolute paths with forward slashes in <command>:
@@ -26,7 +26,7 @@ Install the status line from https://github.com/TheDyXer/claude-statusline for m
 4. Badge label: none
    (If this says a name instead of "none", add --label NAME for Python or -Label NAME for PowerShell to the end of the command.)
 5. Test the command by piping in {"model":{"display_name":"Opus"},"context_window":{"used_percentage":12,"total_input_tokens":24000,"context_window_size":200000}}
-   It should print "Opus | Ctx: 12% (24k/200k)" with color codes. Show me the result.
+   It should print "Opus | advisor: off | Ctx: 12% (24k/200k)" with color codes. If I have an advisor set, it shows that model instead of "off". Show me the result.
 ```
 
 The status line appears after your next message. To show a badge, for example to tell a remote server apart from your own computer, change `Badge label: none` to a name before pasting.
@@ -70,6 +70,25 @@ Use `powershell` instead of `pwsh` if you only have Windows PowerShell 5.1. If y
 
 </details>
 
+## Update
+
+Paste this into Claude Code to get the latest version:
+
+```text
+Update my Claude Code status line from https://github.com/TheDyXer/claude-statusline:
+
+1. Read the "statusLine" command in my ~/.claude/settings.json (%USERPROFILE%\.claude on Windows). Note which script it runs (statusline.py or statusline.ps1) and any --label / -Label. If it runs neither, stop and tell me to use the install prompt instead.
+2. Download the latest version of that same script:
+   https://raw.githubusercontent.com/TheDyXer/claude-statusline/main/statusline.py
+   https://raw.githubusercontent.com/TheDyXer/claude-statusline/main/statusline.ps1
+   Read it before saving: it should only read JSON from stdin and Claude Code's settings files, and print one line.
+3. Compare it with my current copy. If they're identical, tell me it's already up to date and stop. Otherwise, summarize what changed in a few lines. If my copy has edits that look like my own customizations rather than an older version, list them and ask me before continuing.
+4. Back up my current script next to it as <name>.bak, then replace it. Don't change settings.json.
+5. Run the command from settings.json with {"model":{"display_name":"Opus"},"context_window":{"used_percentage":12,"total_input_tokens":24000,"context_window_size":200000}} piped in, and show me the result.
+```
+
+Your settings and badge label stay as they are. If you've edited the script yourself, the prompt asks before replacing your edits, and the old copy is kept as a `.bak` file.
+
 ## What it shows
 
 | Part | Example | Color |
@@ -77,6 +96,7 @@ Use `powershell` instead of `pwsh` if you only have Windows PowerShell 5.1. If y
 | Badge (optional) | `server` | black on orange, only with `--label` / `-Label` |
 | Model | `Opus 5.5` | bold cyan |
 | Effort level | `effort: high` | `low` plain, `medium` blue, `high` bright blue, `xhigh` magenta, `max` bold bright magenta |
+| Advisor | `advisor: Fable` or `advisor: off` | model in bold cyan, `off` in gray |
 | Context window | `Ctx: 8% (15.5k/200k)` | green below 50%, yellow 50–79%, red 80% and up |
 | 5-hour limit | `5h 62% (16:05 · 2h 05m)` | by pace (see below) |
 | Weekly limit | `wk 41% (Wed 04:02 · 3d 14h)` | by pace (see below) |
@@ -84,6 +104,18 @@ Use `powershell` instead of `pwsh` if you only have Windows PowerShell 5.1. If y
 Reset times are in your local time, followed by a countdown. Once a reset time has passed, the countdown is left off.
 
 Parts with no data are hidden and don't leave a placeholder. The usage limits only appear on Pro and Max plans, after the first reply in a session. The effort level only appears for models that support it.
+
+### The advisor part
+
+The advisor part is always shown. Claude Code doesn't send the advisor to status line scripts, so the script reads the `advisorModel` setting from the same files Claude Code uses, in the same order:
+
+1. `.claude/settings.local.json` in the project
+2. `.claude/settings.json` in the project
+3. `~/.claude/settings.json`, or the folder in `CLAUDE_CONFIG_DIR`
+
+`/advisor` saves your choice to the last one, and `/advisor off` removes it. The line refreshes within 30 seconds. A short name like `fable` shows as `Fable`, and a full model ID like `claude-opus-5-5` shows as `Opus 5.5`. It shows `off` when the setting is missing, or when `CLAUDE_CODE_DISABLE_ADVISOR_TOOL` is set.
+
+It shows the advisor you've *set*. It can't see an advisor you only picked for one session with `claude --advisor`. It also can't tell when Claude Code isn't using the saved advisor, for example when it [doesn't pair with your main model](https://code.claude.com/docs/en/advisor#choose-an-advisor-model).
 
 ## How pace colors work
 
@@ -118,7 +150,7 @@ The thresholds are in `raw_color` and `pace_color` in `statusline.py`, and in `G
 python tests/test_parity.py --show
 ```
 
-This feeds 39 sample inputs to both scripts, at a fixed test time. It checks that the output matches byte for byte, and that the colors are the expected ones. It uses `pwsh` if it's installed, or Windows PowerShell otherwise. Set `PS_EXE` to choose. Without PowerShell, it runs only the Python checks.
+This feeds 68 sample inputs to both scripts, at a fixed test time, with test settings files for the advisor part. It checks that the output matches byte for byte, and that the colors are the expected ones. It uses `pwsh` if it's installed, or Windows PowerShell otherwise. Set `PS_EXE` to choose. Without PowerShell, it runs only the Python checks.
 
 ## License
 

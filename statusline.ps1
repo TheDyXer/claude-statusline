@@ -79,6 +79,66 @@ function Format-Tokens {
     return "$whole.$frac$unit"
 }
 
+function Test-Truthy {
+    param([string]$Value)
+    if (-not $Value) { return $false }
+    return @('1', 'true', 'yes', 'on') -ccontains $Value.Trim(" `t`r`n").ToLowerInvariant()
+}
+
+# Parsed settings file, or $null if it's missing, unreadable or not a JSON object
+function Read-SettingsFile {
+    param([string]$Path)
+    try {
+        if (-not [System.IO.File]::Exists($Path)) { return $null }
+        $text = [System.IO.File]::ReadAllText($Path)
+        if (-not $text.TrimStart(" `t`r`n").StartsWith('{')) { return $null }
+        return ($text | ConvertFrom-Json -ErrorAction Stop)
+    } catch { return $null }
+}
+
+# advisorModel in Claude Code's settings order; $null means off.
+# Claude Code doesn't send the advisor to status line scripts, so it's read from the same
+# files Claude Code reads. The first file that has the key decides, even if its value is null.
+function Get-AdvisorSetting {
+    param($Data)
+    if (Test-Truthy $env:CLAUDE_CODE_DISABLE_ADVISOR_TOOL) { return $null }
+    $paths = @()
+    $project = $Data.workspace.project_dir
+    if ($project -is [string] -and $project) {
+        $paths += [System.IO.Path]::Combine($project, '.claude', 'settings.local.json')
+        $paths += [System.IO.Path]::Combine($project, '.claude', 'settings.json')
+    }
+    $config = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { [System.IO.Path]::Combine([Environment]::GetFolderPath('UserProfile'), '.claude') }
+    $paths += [System.IO.Path]::Combine($config, 'settings.json')
+    foreach ($path in $paths) {
+        $settings = Read-SettingsFile $path
+        if ($null -eq $settings) { continue }
+        $prop = $settings.PSObject.Properties | Where-Object { $_.Name -ceq 'advisorModel' } | Select-Object -First 1
+        if (-not $prop) { continue }
+        if ($prop.Value -is [string]) {
+            $value = $prop.Value.Trim(" `t`r`n")
+            if ($value) { return $value }
+        }
+        return $null
+    }
+    return $null
+}
+
+# fable -> Fable, claude-opus-5-5 -> Opus 5.5, anything else as-is
+function Format-ModelId {
+    param([string]$Value)
+    $low = $Value.ToLowerInvariant()
+    if (@('fable', 'opus', 'sonnet', 'haiku') -ccontains $low) {
+        $family = $low; $version = ''
+    } elseif ($low -cmatch '^claude-([a-z]+)-([0-9]{1,2})(?:-([0-9]{1,2}))?(?:-[0-9]{8})?\z') {
+        $family = $Matches[1]; $version = " $($Matches[2])"
+        if ($Matches[3]) { $version += ".$($Matches[3])" }
+    } else {
+        return $Value
+    }
+    return $family.Substring(0, 1).ToUpperInvariant() + $family.Substring(1) + $version
+}
+
 function Format-Limit {
     param([string]$Name, $Limit, [int64]$Window, [string]$TimeFormat)
     if (-not $Limit -or $null -eq $Limit.used_percentage) { return $null }
@@ -113,7 +173,12 @@ if ($data.effort -and $data.effort.level) {
     $parts.Add("${dim}effort:$reset $val")
 }
 
-# 3. Context window usage
+# 3. Advisor (Claude Code doesn't send it, so read it from the settings files)
+$advisor = Get-AdvisorSetting $data
+$val = if ($advisor) { "$boldCyan$(Format-ModelId $advisor)$reset" } else { "${dim}off$reset" }
+$parts.Add("${dim}advisor:$reset $val")
+
+# 4. Context window usage
 $cw = $data.context_window
 if ($cw -and $null -ne $cw.used_percentage) {
     $pct = [math]::Round([double]$cw.used_percentage)
@@ -124,7 +189,7 @@ if ($cw -and $null -ne $cw.used_percentage) {
     $parts.Add($seg)
 }
 
-# 4 & 5. Rate limits (5-hour session + 7-day weekly)
+# 5 & 6. Rate limits (5-hour session + 7-day weekly)
 $rl = $data.rate_limits
 if ($rl) {
     $seg = Format-Limit -Name '5h' -Limit $rl.five_hour -Window 18000 -TimeFormat 'HH:mm'

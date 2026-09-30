@@ -6,13 +6,18 @@ Usage: python tests/test_parity.py [--show]
 
 Uses pwsh if installed, otherwise Windows PowerShell. Set PS_EXE to pick one.
 Without any PowerShell, only the Python-side checks run.
+
+Every run points CLAUDE_CONFIG_DIR at a folder of test settings (empty by default), so the
+advisor part never depends on your real ~/.claude/settings.json.
 """
+import atexit
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PS1 = os.path.join(ROOT, 'statusline.ps1')
@@ -21,6 +26,11 @@ PY = os.path.join(ROOT, 'statusline.py')
 N = 1790424000  # fixed "now" (2026-09-26 12:00 UTC)
 H, D = 3600, 86400
 BADGE = '\x1b[30;48;5;208m work \x1b[0m'
+DIM, CYAN, R = '\x1b[90m', '\x1b[1;36m', '\x1b[0m'
+
+TMP = tempfile.mkdtemp(prefix='statusline-test-')
+atexit.register(shutil.rmtree, TMP, True)
+NO_CONFIG = os.path.join(TMP, 'no-config')  # never created, so there's no settings.json
 
 
 def full(**over):
@@ -54,6 +64,69 @@ def ctx(pct, used=None, total=None):
         cw['context_window_size'] = total
     return json.dumps({'model': {'display_name': 'Opus 5.5'}, 'context_window': cw})
 
+
+def setting(value):
+    return json.dumps({'advisorModel': value})
+
+
+def advisor(name, user=None, local=None, project=None, env=None, base=None):
+    """A case with its own settings files, given as raw text (None = no file)."""
+    root = os.path.join(TMP, re.sub(r'[^a-z0-9]+', '-', name.lower()))
+    files = {('config', 'settings.json'): user,
+             ('project', '.claude', 'settings.local.json'): local,
+             ('project', '.claude', 'settings.json'): project}
+    for rel, text in files.items():
+        if text is not None:
+            path = os.path.join(root, *rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'w', encoding='utf-8', newline='') as f:
+                f.write(text)
+    payload = dict(base or {'model': {'display_name': 'Opus 5.5'}})
+    payload['workspace'] = {'project_dir': os.path.join(root, 'project')}
+    return name, json.dumps(payload), {'CLAUDE_CONFIG_DIR': os.path.join(root, 'config'), **(env or {})}
+
+
+OFF = {'CLAUDE_CODE_DISABLE_ADVISOR_TOOL': '1'}
+
+ADVISOR_CASES = [
+    advisor('advisor no settings files'),
+    advisor('advisor key absent', user='{"theme": "dark"}'),
+    advisor('advisor fable', user=setting('fable')),
+    advisor('advisor opus', user=setting('opus')),
+    advisor('advisor sonnet', user=setting('sonnet')),
+    advisor('advisor claude-opus-5-5', user=setting('claude-opus-5-5')),
+    advisor('advisor claude-fable-5-1', user=setting('claude-fable-5-1')),
+    advisor('advisor claude-sonnet-5', user=setting('claude-sonnet-5')),
+    advisor('advisor dated haiku id', user=setting('claude-haiku-4-5-20251001')),
+    advisor('advisor uppercase alias', user=setting('FABLE')),
+    advisor('advisor padded alias', user=setting(' fable ')),
+    advisor('advisor unknown name', user=setting('my-gateway-model')),
+    advisor('advisor null', user=setting(None)),
+    advisor('advisor empty string', user=setting('')),
+    advisor('advisor number', user=setting(5)),
+    advisor('advisor wrong key case', user='{"AdvisorModel": "opus"}'),
+    advisor('advisor malformed user file', user='{"advisorModel": "opus",'),
+    advisor('advisor user file with BOM', user='﻿' + setting('opus')),
+    advisor('advisor top-level array', user='[{"advisorModel": "opus"}]'),
+    advisor('advisor local beats user', user=setting('fable'), local=setting('opus')),
+    advisor('advisor project beats user', user=setting('fable'), project=setting('sonnet')),
+    advisor('advisor local beats project', project=setting('sonnet'), local=setting('claude-opus-5-5')),
+    advisor('advisor local null turns off', user=setting('fable'), local=setting(None)),
+    advisor('advisor project without key', user=setting('fable'), project='{"theme": "dark"}'),
+    advisor('advisor malformed local skipped', user=setting('fable'), local='not json'),
+    advisor('advisor disabled by env 1', user=setting('fable'), env=OFF),
+    advisor('advisor disabled by env true', user=setting('fable'), env={'CLAUDE_CODE_DISABLE_ADVISOR_TOOL': 'True'}),
+    advisor('advisor env 0 keeps it', user=setting('fable'), env={'CLAUDE_CODE_DISABLE_ADVISOR_TOOL': '0'}),
+    advisor('advisor in full line', user=setting('fable'), base=json.loads(full())),
+]
+
+# Exact bytes, so both scripts can't be wrong the same way and still match
+MODEL = f'{CYAN}Opus 5.5{R}{DIM} | {R}'
+EXPECT = {
+    'advisor fable': f'{MODEL}{DIM}advisor:{R} {CYAN}Fable{R}\n',
+    'advisor claude-opus-5-5': f'{MODEL}{DIM}advisor:{R} {CYAN}Opus 5.5{R}\n',
+    'advisor key absent': f'{MODEL}{DIM}advisor:{R} {DIM}off{R}\n',
+}
 
 CASES = [
     ('full payload', full()),
@@ -92,12 +165,16 @@ CASES = [
     ('wk day 1 at 45% red', limits(week={'used_percentage': 45, 'resets_at': N + 6 * D})),
     ('wk only (no 5h)', limits(week={'used_percentage': 41, 'resets_at': N + 3 * D})),
 ]
+# (name, payload, extra env); only the advisor cases need their own settings
+CASES = [(name, payload, {}) for name, payload in CASES] + ADVISOR_CASES
 
 # Expected colors, so the test catches both scripts being wrong in the same way.
 COLOR_NAMES = {'32': 'green', '33': 'yellow', '31': 'red', '34': 'blue', '94': 'bright-blue',
-               '35': 'magenta', '1;95': 'bold-bright-magenta'}
+               '35': 'magenta', '1;95': 'bold-bright-magenta', '1;36': 'bold-cyan', '90': 'gray'}
 EXPECTED_COLORS = {
-    'full payload': ['effort blue', 'ctx green', '5h red', 'wk yellow'],
+    'full payload': ['effort blue', 'advisor gray', 'ctx green', '5h red', 'wk yellow'],
+    'advisor in full line': ['effort blue', 'advisor bold-cyan', 'ctx green', '5h red', 'wk yellow'],
+    'advisor fable': ['advisor bold-cyan'], 'advisor key absent': ['advisor gray'],
     'effort low': ['effort plain'], 'effort medium': ['effort blue'], 'effort high': ['effort bright-blue'],
     'effort xhigh': ['effort magenta'], 'effort max': ['effort bold-bright-magenta'],
     'effort turbo': ['effort plain'], 'effort High': ['effort bright-blue'],
@@ -114,6 +191,7 @@ EXPECTED_COLORS = {
 def colors_in(line):
     found = []
     for part, pattern in (('effort', r'effort:\x1b\[0m (?:\x1b\[([0-9;]+)m)?[A-Za-z]'),
+                          ('advisor', r'advisor:\x1b\[0m \x1b\[([0-9;]+)m[A-Za-z]'),
                           ('ctx', r'Ctx:\x1b\[0m \x1b\[([0-9;]+)m\d'),
                           ('5h', r'5h\x1b\[0m \x1b\[([0-9;]+)m\d'),
                           ('wk', r'wk\x1b\[0m \x1b\[([0-9;]+)m\d')):
@@ -123,8 +201,10 @@ def colors_in(line):
     return found
 
 
-def run(cmd, payload):
-    env = dict(os.environ, STATUSLINE_NOW=str(N))
+def run(cmd, payload, extra_env=None):
+    env = dict(os.environ, STATUSLINE_NOW=str(N), CLAUDE_CONFIG_DIR=NO_CONFIG)
+    env.pop('CLAUDE_CODE_DISABLE_ADVISOR_TOOL', None)
+    env.update(extra_env or {})
     return subprocess.run(cmd, input=payload.encode('utf-8'), capture_output=True, env=env, timeout=30).stdout
 
 
@@ -151,16 +231,23 @@ def main():
         if not ok:
             print(detail)
 
-    for name, payload in CASES:
-        b = run(py_cmd, payload)
+    for name, payload, extra_env in CASES:
+        b = run(py_cmd, payload, extra_env)
         if ps_cmd:
-            a = run(ps_cmd, payload)
+            a = run(ps_cmd, payload, extra_env)
             ok = a == b and b.endswith(b'\n') and b.count(b'\n') == 1
             check(f'parity: {name}', ok, f'      ps1: {a!r}\n      py : {b!r}', strip(b))
         if name in EXPECTED_COLORS:
             got = colors_in(b.decode('utf-8'))
             missing = [c for c in EXPECTED_COLORS[name] if c not in got]
             check(f'colors: {name}', not missing, f'      expected {missing}, got {got}', strip(b))
+        if name in EXPECT:
+            want = EXPECT[name].encode('utf-8')
+            check(f'exact: {name}', b == want, f'      want: {want!r}\n      got : {b!r}', strip(b))
+
+    # The advisor part sits between effort and Ctx
+    line = strip(run(py_cmd, CASES[0][1]))
+    check('advisor placement', 'effort: medium | advisor: off | Ctx: 8%' in line, f'      got: {line}', line)
 
     for name, payload in (('badge + full payload', CASES[0][1]), ('badge alone', '{}')):
         plain = run(py_cmd, payload).decode('utf-8').rstrip('\n')
