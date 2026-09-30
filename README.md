@@ -113,7 +113,7 @@ The advisor part is always shown. Claude Code doesn't send the advisor to status
 2. `.claude/settings.json` in the project
 3. `~/.claude/settings.json`, or the folder in `CLAUDE_CONFIG_DIR`
 
-`/advisor` saves your choice to the last one, and `/advisor off` removes it. The line refreshes within 30 seconds. A short name like `fable` shows as `Fable`, and a full model ID like `claude-opus-5-5` shows as `Opus 5.5`. It shows `off` when the setting is missing, or when `CLAUDE_CODE_DISABLE_ADVISOR_TOOL` is set.
+`/advisor` saves your choice to the last one, and `/advisor off` turns it off there. The line catches up within 30 seconds. A short name like `fable` shows as `Fable`, and a full model ID like `claude-opus-5-5` shows as `Opus 5.5`. It shows `off` when no file sets a model, or when `CLAUDE_CODE_DISABLE_ADVISOR_TOOL` is set in the environment the status line runs in.
 
 It shows the advisor you've *set*. It can't see an advisor you only picked for one session with `claude --advisor`. It also can't tell when Claude Code isn't using the saved advisor, for example when it [doesn't pair with your main model](https://code.claude.com/docs/en/advisor#choose-an-advisor-model).
 
