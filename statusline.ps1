@@ -96,12 +96,98 @@ function Read-SettingsFile {
     } catch { return $null }
 }
 
-# advisorModel in Claude Code's settings order; $null means off.
-# Claude Code doesn't send the advisor to status line scripts, so it's read from the same
-# files Claude Code reads. The first file that has the key decides, even if its value is null.
-function Get-AdvisorSetting {
+# How much of the session transcript to read, from the end
+$tailBytes = 2 * 1024 * 1024
+$commandOutput = '<local-command-stdout>'
+$advisorOutput = $commandOutput + 'Advisor '
+$ordinal = [System.StringComparison]::Ordinal
+
+# The last $tailBytes of the transcript as lines, oldest first; $null if unreadable.
+# A line cut off by the start of the window is blanked. Reading one byte before the
+# window tells a cut-off line from one that starts exactly there.
+function Read-TranscriptTail {
+    param([string]$Path)
+    try {
+        $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        try {
+            $size = $fs.Length
+            $start = [math]::Max([int64]0, $size - $tailBytes)
+            $begin = if ($start -gt 0) { $start - 1 } else { [int64]0 }
+            [void]$fs.Seek($begin, [System.IO.SeekOrigin]::Begin)
+            $buf = New-Object byte[] ($size - $begin)
+            $read = 0
+            while ($read -lt $buf.Length) {
+                $n = $fs.Read($buf, $read, $buf.Length - $read)
+                if ($n -le 0) { break }
+                $read += $n
+            }
+        } finally { $fs.Dispose() }
+    } catch { return $null }
+    $lines = $utf8.GetString($buf, 0, $read).Split([char]10)
+    if ($start -gt 0) { $lines[0] = '' }
+    return , $lines
+}
+
+# The advisor this session last used, from its transcript: a model name, '' for off, or
+# $null if nothing in the last $tailBytes decides it. The newest decisive entry wins: every
+# main-thread reply records the advisor it was sent with (advisorModel, left out when off),
+# and /advisor output covers the time before the next reply. The /advisor texts are from
+# Claude Code 2.1.286.
+function Get-TranscriptAdvisor {
+    param([string]$Path)
+    $lines = Read-TranscriptTail $Path
+    if ($null -eq $lines) { return $null }
+    for ($i = $lines.Length - 1; $i -ge 0; $i--) {
+        $line = $lines[$i].TrimEnd([char]13)
+        if (-not $line.StartsWith('{', $ordinal)) { continue }
+        if (-not ($line.Contains('"type":"assistant"') -or $line.Contains($advisorOutput))) { continue }
+        try { $entry = $line | ConvertFrom-Json -ErrorAction Stop } catch { continue }
+        if ($entry -isnot [System.Management.Automation.PSCustomObject]) { continue }
+        $message = $entry.message
+        if ($message -isnot [System.Management.Automation.PSCustomObject]) { continue }
+        if ($entry.type -ceq 'assistant') {
+            if (($entry.isSidechain -is [bool] -and $entry.isSidechain) -or
+                ($entry.isAbortedMidStream -is [bool] -and $entry.isAbortedMidStream) -or
+                $message.model -ceq '<synthetic>') { continue }
+            $value = $entry.advisorModel
+            if ($value -is [string] -and $value) { return $value }
+            return ''
+        }
+        $content = $message.content
+        if ($entry.type -ceq 'user' -and $content -is [string] -and $content.StartsWith($advisorOutput, $ordinal)) {
+            $text = $content.Substring($commandOutput.Length)
+            $end = $text.IndexOf('</local-command-stdout>', $ordinal)
+            if ($end -ge 0) { $text = $text.Substring(0, $end) }
+            if ($text.StartsWith('Advisor disabled', $ordinal)) { return '' }
+            if ($text -cmatch 'keeps (.+?) as its advisor model') { return $Matches[1] }
+            if ($text.Contains('will not activate') -or $text.Contains('will activate when')) { return '' }
+            if ($text.StartsWith('Advisor set to ', $ordinal)) {
+                return $text.Substring('Advisor set to '.Length).Split([char]10)[0].Trim(" `t`r")
+            }
+        }
+    }
+    return $null
+}
+
+# The advisor this session uses; $null or '' is off.
+# Claude Code doesn't send the advisor to status line scripts, and settings.json only holds
+# the last choice saved from any session. So the session's own transcript comes first, and
+# the settings files are the fallback (a new session before its first reply, or after /clear).
+function Get-SessionAdvisor {
     param($Data)
     if (Test-Truthy $env:CLAUDE_CODE_DISABLE_ADVISOR_TOOL) { return $null }
+    $path = $Data.transcript_path
+    if ($path -is [string] -and $path) {
+        $found = Get-TranscriptAdvisor $path
+        if ($null -ne $found) { return $found }
+    }
+    return Get-AdvisorSetting $Data
+}
+
+# advisorModel in Claude Code's settings order; $null means off.
+# The first file that has the key decides, even if its value is null.
+function Get-AdvisorSetting {
+    param($Data)
     $paths = @()
     $project = $Data.workspace.project_dir
     if ($project -is [string] -and $project) {
@@ -173,8 +259,8 @@ if ($data.effort -and $data.effort.level) {
     $parts.Add("${dim}effort:$reset $val")
 }
 
-# 3. Advisor (Claude Code doesn't send it, so read it from the settings files)
-$advisor = Get-AdvisorSetting $data
+# 3. Advisor (Claude Code doesn't send it, so read it from the transcript or settings)
+$advisor = Get-SessionAdvisor $data
 $val = if ($advisor) { "$boldCyan$(Format-ModelId $advisor)$reset" } else { "${dim}off$reset" }
 $parts.Add("${dim}advisor:$reset $val")
 

@@ -16,7 +16,7 @@ Install the status line from https://github.com/TheDyXer/claude-statusline for m
 1. Pick the script for this machine. If Python 3 is available (python3, or python / py on Windows), use statusline.py. Otherwise, on Windows, use statusline.ps1.
    https://raw.githubusercontent.com/TheDyXer/claude-statusline/main/statusline.py
    https://raw.githubusercontent.com/TheDyXer/claude-statusline/main/statusline.ps1
-2. Download it into my Claude config folder (~/.claude, which is %USERPROFILE%\.claude on Windows). Read it before saving: it should only read JSON from stdin and Claude Code's settings files, and print one line.
+2. Download it into my Claude config folder (~/.claude, which is %USERPROFILE%\.claude on Windows). Read it before saving: it should only read JSON from stdin, this session's transcript and Claude Code's settings files, and print one line.
 3. Back up ~/.claude/settings.json, then set only its "statusLine" key and keep everything else:
    "statusLine": { "type": "command", "command": "<command>", "refreshInterval": 30 }
    Use absolute paths with forward slashes in <command>:
@@ -81,7 +81,7 @@ Update my Claude Code status line from https://github.com/TheDyXer/claude-status
 2. Download the latest version of that same script:
    https://raw.githubusercontent.com/TheDyXer/claude-statusline/main/statusline.py
    https://raw.githubusercontent.com/TheDyXer/claude-statusline/main/statusline.ps1
-   Read it before saving: it should only read JSON from stdin and Claude Code's settings files, and print one line.
+   Read it before saving: it should only read JSON from stdin, this session's transcript and Claude Code's settings files, and print one line.
 3. Compare it with my current copy. If they're identical, tell me it's already up to date and stop. Otherwise, summarize what changed in a few lines. If my copy has edits that look like my own customizations rather than an older version, list them and ask me before continuing.
 4. Back up my current script next to it as <name>.bak, then replace it. Don't change settings.json.
 5. Run the command from settings.json with {"model":{"display_name":"Opus"},"context_window":{"used_percentage":12,"total_input_tokens":24000,"context_window_size":200000}} piped in, and show me the result.
@@ -96,7 +96,7 @@ Your settings and badge label stay as they are. If you've edited the script your
 | Badge (optional) | `server` | black on orange, only with `--label` / `-Label` |
 | Model | `Opus 5.5` | bold cyan |
 | Effort level | `effort: high` | `low` plain, `medium` blue, `high` bright blue, `xhigh` magenta, `max` bold bright magenta |
-| Advisor | `advisor: Fable` or `advisor: off` | model in bold cyan, `off` in gray |
+| Advisor | `advisor: Fable 5.1` or `advisor: off` | model in bold cyan, `off` in gray |
 | Context window | `Ctx: 8% (15.5k/200k)` | green below 50%, yellow 50–79%, red 80% and up |
 | 5-hour limit | `5h 62% (16:05 · 2h 05m)` | by pace (see below) |
 | Weekly limit | `wk 41% (Wed 04:02 · 3d 14h)` | by pace (see below) |
@@ -107,15 +107,19 @@ Parts with no data are hidden and don't leave a placeholder. The usage limits on
 
 ### The advisor part
 
-The advisor part is always shown. Claude Code doesn't send the advisor to status line scripts, so the script reads the `advisorModel` setting from the same files Claude Code uses, in the same order:
+The advisor part is always shown, and each session shows its own advisor. If you run `/advisor opus` in one session and `/advisor fable` in another, each line says what that session uses.
 
-1. `.claude/settings.local.json` in the project
-2. `.claude/settings.json` in the project
-3. `~/.claude/settings.json`, or the folder in `CLAUDE_CONFIG_DIR`
+Claude Code doesn't send the advisor to status line scripts, and `settings.json` only holds the last choice saved from any session. So the script reads it from two places:
 
-`/advisor` saves your choice to the last one, and `/advisor off` turns it off there. The line catches up within 30 seconds. A short name like `fable` shows as `Fable`, and a full model ID like `claude-opus-5-5` shows as `Opus 5.5`. It shows `off` when no file sets a model, or when `CLAUDE_CODE_DISABLE_ADVISOR_TOOL` is set in the environment the status line runs in.
+1. **This session's transcript** (the file in `transcript_path`, last 2 MB). Every reply records the advisor it was sent with, and nothing when the advisor is off. `/advisor` also writes a message there right away, so a change shows up before the next reply. This covers `claude --advisor` sessions too, from the first reply on.
+2. **The settings files**, when the transcript doesn't say yet: a new session before its first reply, or right after `/clear`. These are checked in the same order Claude Code uses:
+   1. `.claude/settings.local.json` in the project
+   2. `.claude/settings.json` in the project
+   3. `~/.claude/settings.json`, or the folder in `CLAUDE_CONFIG_DIR`
 
-It shows the advisor you've *set*. It can't see an advisor you only picked for one session with `claude --advisor`. It also can't tell when Claude Code isn't using the saved advisor, for example when it [doesn't pair with your main model](https://code.claude.com/docs/en/advisor#choose-an-advisor-model).
+The line catches up within 30 seconds of a change. A short name like `fable` shows as `Fable`, and a full model ID like `claude-opus-5-5` shows as `Opus 5.5`. It shows `off` when the session's replies go out without an advisor, when nothing sets one, or when `CLAUDE_CODE_DISABLE_ADVISOR_TOOL` is set in the environment the status line runs in.
+
+The transcript format and the `/advisor` messages come from Claude Code 2.1.286. If a later version changes them, the script falls back to the settings files, and the tests (`tests/test_parity.py`) show what broke.
 
 ## How pace colors work
 
@@ -150,7 +154,7 @@ The thresholds are in `raw_color` and `pace_color` in `statusline.py`, and in `G
 python tests/test_parity.py --show
 ```
 
-This feeds 68 sample inputs to both scripts, at a fixed test time, with test settings files for the advisor part. It checks that the output matches byte for byte, and that the colors are the expected ones. It uses `pwsh` if it's installed, or Windows PowerShell otherwise. Set `PS_EXE` to choose. Without PowerShell, it runs only the Python checks.
+This feeds 89 sample inputs to both scripts, at a fixed test time, with test settings files and session transcripts for the advisor part. It checks that the output matches byte for byte, and that the colors are the expected ones. It uses `pwsh` if it's installed, or Windows PowerShell otherwise. Set `PS_EXE` to choose. Without PowerShell, it runs only the Python checks.
 
 ## License
 

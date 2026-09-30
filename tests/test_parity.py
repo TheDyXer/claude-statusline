@@ -69,12 +69,20 @@ def setting(value):
     return json.dumps({'advisorModel': value})
 
 
-def advisor(name, user=None, local=None, project=None, env=None, base=None):
-    """A case with its own settings files, given as raw text (None = no file)."""
+NO_FILE = object()  # transcript_path set, but the file doesn't exist
+
+
+def advisor(name, user=None, local=None, project=None, env=None, base=None, transcript=None):
+    """A case with its own settings files, given as raw text (None = no file).
+
+    transcript is the raw text of the session transcript (see jl); it's passed as
+    transcript_path in the input.
+    """
     root = os.path.join(TMP, re.sub(r'[^a-z0-9]+', '-', name.lower()))
     files = {('config', 'settings.json'): user,
              ('project', '.claude', 'settings.local.json'): local,
-             ('project', '.claude', 'settings.json'): project}
+             ('project', '.claude', 'settings.json'): project,
+             ('session.jsonl',): None if transcript is NO_FILE else transcript}
     for rel, text in files.items():
         if text is not None:
             path = os.path.join(root, *rel)
@@ -83,7 +91,66 @@ def advisor(name, user=None, local=None, project=None, env=None, base=None):
                 f.write(text)
     payload = dict(base or {'model': {'display_name': 'Opus 5.5'}})
     payload['workspace'] = {'project_dir': os.path.join(root, 'project')}
+    if transcript is not None:
+        payload['transcript_path'] = os.path.join(root, 'session.jsonl')
     return name, json.dumps(payload), {'CLAUDE_CONFIG_DIR': os.path.join(root, 'config'), **(env or {})}
+
+
+def jl(*entries):
+    """Transcript lines the way Claude Code writes them: compact JSON, one per line."""
+    return ''.join(json.dumps(e, separators=(',', ':'), ensure_ascii=False) + '\n' for e in entries)
+
+
+def reply(advisor_model=None, model='claude-opus-5-5', **extra):
+    """An assistant entry; advisorModel is only there when an advisor was attached."""
+    entry = {'type': 'assistant', 'message': {'model': model, 'role': 'assistant',
+                                              'content': [{'type': 'text', 'text': 'ok ✨ ő'}]}}
+    if advisor_model:
+        entry['advisorModel'] = advisor_model
+    entry.update(extra)
+    return entry
+
+
+def command_output(text):
+    """What /advisor leaves in the transcript."""
+    return {'type': 'user', 'message': {'role': 'user',
+                                        'content': f'<local-command-stdout>{text}</local-command-stdout>'}}
+
+
+def tool_result(text):
+    return {'type': 'user', 'message': {'role': 'user',
+                                        'content': [{'type': 'tool_result', 'tool_use_id': 't1', 'content': text}]}}
+
+
+TAIL = 2 * 1024 * 1024  # how much of the transcript the scripts read, from the end
+
+
+def filler(size):
+    """Exactly `size` bytes of complete transcript lines that decide nothing."""
+    base = len(jl(tool_result('')))
+    lines = []
+    while size - (base + 1000) >= base:
+        lines.append(tool_result('x' * 1000))
+        size -= base + 1000
+    lines.append(tool_result('x' * (size - base)))
+    return jl(*lines)
+
+
+def window(offset):
+    """An Opus reply that starts `offset` bytes after the start of the 2 MB window.
+
+    Negative: the window starts inside the line before it. 0: exactly at its start.
+    Positive: inside the reply, so it's cut off and can't decide.
+    """
+    line = jl(reply('claude-opus-5-5'))
+    return jl(tool_result('y' * 100)) + line + filler(TAIL - len(line.encode('utf-8')) + offset)
+KEEPS = ('Advisor set to Fable 5.1\nThe current conversation keeps Opus 5.5 as its advisor model until /clear '
+         'or /compact, so the tool it has already declared stays unchanged; turning the advisor on or off '
+         'applies right away.')
+WEAKER = ('Advisor set to Sonnet 5\nSonnet 5 is less capable than the current main model (Opus 5.5), so the '
+          'advisor will not activate. Choose a more capable model.')
+UNSUPPORTED = ('Advisor set to Opus 5.5\nHaiku 3 (claude-3-haiku) does not support the advisor. It will '
+               'activate when you switch to a supported main model.')
 
 
 OFF = {'CLAUDE_CODE_DISABLE_ADVISOR_TOOL': '1'}
@@ -118,7 +185,69 @@ ADVISOR_CASES = [
     advisor('advisor disabled by env true', user=setting('fable'), env={'CLAUDE_CODE_DISABLE_ADVISOR_TOOL': 'True'}),
     advisor('advisor env 0 keeps it', user=setting('fable'), env={'CLAUDE_CODE_DISABLE_ADVISOR_TOOL': '0'}),
     advisor('advisor in full line', user=setting('fable'), base=json.loads(full())),
+    # The session transcript beats settings; settings are the fallback
+    advisor('transcript opus session', user=setting('fable'), transcript=jl(reply('claude-opus-5-5'))),
+    advisor('transcript advisor off in session', user=setting('fable'), transcript=jl(reply())),
+    advisor('transcript skips synthetic', user=setting('fable'),
+            transcript=jl(reply('claude-opus-5-5'), reply(model='<synthetic>'))),
+    advisor('transcript skips aborted', user=setting('fable'),
+            transcript=jl(reply('claude-opus-5-5'), reply(isAbortedMidStream=True))),
+    advisor('transcript skips sidechain', user=setting('fable'),
+            transcript=jl(reply('claude-opus-5-5'), reply(isSidechain=True))),
+    advisor('transcript /advisor set to', user=setting('fable'),
+            transcript=jl(reply('claude-fable-5-1'), command_output('Advisor set to Opus 5.5'))),
+    advisor('transcript /advisor disabled', user=setting('fable'),
+            transcript=jl(reply('claude-fable-5-1'), command_output('Advisor disabled'))),
+    advisor('transcript /advisor keeps note', user=setting('fable'),
+            transcript=jl(reply('claude-opus-5-5'), command_output(KEEPS))),
+    advisor('transcript /advisor will not activate', user=setting('fable'),
+            transcript=jl(reply('claude-fable-5-1'), command_output(WEAKER))),
+    advisor('transcript /advisor will activate when', user=setting('fable'),
+            transcript=jl(reply('claude-fable-5-1'), command_output(UNSUPPORTED))),
+    advisor('transcript reply after /advisor wins', user=setting('opus'),
+            transcript=jl(command_output('Advisor set to Opus 5.5'), reply('claude-fable-5-1'))),
+    advisor('transcript tool result ignored', user=setting('opus'),
+            transcript=jl(reply('claude-fable-5-1'),
+                          tool_result('<local-command-stdout>Advisor set to Opus 5.5</local-command-stdout>'))),
+    advisor('transcript half-written last line', user=setting('fable'),
+            transcript=jl(reply('claude-opus-5-5')) + '{"type":"assistant","advisorModel":"claude-fab'),
+    advisor('transcript CRLF', user=setting('fable'), transcript=jl(reply('claude-opus-5-5')).replace('\n', '\r\n')),
+    advisor('transcript window starts before entry', user=setting('fable'), transcript=window(-20)),
+    advisor('transcript window starts at entry', user=setting('fable'), transcript=window(0)),
+    advisor('transcript window cuts entry', user=setting('fable'), transcript=window(1)),
+    advisor('transcript missing file', user=setting('fable'), transcript=NO_FILE),
+    advisor('transcript empty file', user=setting('fable'), transcript=''),
+    advisor('transcript nothing decisive', user=setting('fable'),
+            transcript=jl(tool_result('hi'), command_output('Something else'))),
+    advisor('transcript env disable wins', user=setting('fable'), transcript=jl(reply('claude-opus-5-5')), env=OFF),
 ]
+
+# Expected advisor for every advisor case: a script that ignored the transcript or settings
+# would still match the other script, so parity alone can't catch it
+EXPECT_ADVISOR = {
+    'advisor no settings files': 'off', 'advisor key absent': 'off', 'advisor fable': 'Fable',
+    'advisor opus': 'Opus', 'advisor sonnet': 'Sonnet', 'advisor claude-opus-5-5': 'Opus 5.5',
+    'advisor claude-fable-5-1': 'Fable 5.1', 'advisor claude-sonnet-5': 'Sonnet 5',
+    'advisor dated haiku id': 'Haiku 4.5', 'advisor uppercase alias': 'Fable', 'advisor padded alias': 'Fable',
+    'advisor unknown name': 'my-gateway-model', 'advisor null': 'off', 'advisor empty string': 'off',
+    'advisor number': 'off', 'advisor wrong key case': 'off', 'advisor malformed user file': 'off',
+    'advisor user file with BOM': 'Opus', 'advisor top-level array': 'off', 'advisor local beats user': 'Opus',
+    'advisor project beats user': 'Sonnet', 'advisor local beats project': 'Opus 5.5',
+    'advisor local null turns off': 'off', 'advisor project without key': 'Fable',
+    'advisor malformed local skipped': 'Fable', 'advisor disabled by env 1': 'off',
+    'advisor disabled by env true': 'off', 'advisor env 0 keeps it': 'Fable', 'advisor in full line': 'Fable',
+    'transcript opus session': 'Opus 5.5', 'transcript advisor off in session': 'off',
+    'transcript skips synthetic': 'Opus 5.5', 'transcript skips aborted': 'Opus 5.5',
+    'transcript skips sidechain': 'Opus 5.5', 'transcript /advisor set to': 'Opus 5.5',
+    'transcript /advisor disabled': 'off', 'transcript /advisor keeps note': 'Opus 5.5',
+    'transcript /advisor will not activate': 'off', 'transcript /advisor will activate when': 'off',
+    'transcript reply after /advisor wins': 'Fable 5.1', 'transcript tool result ignored': 'Fable 5.1',
+    'transcript half-written last line': 'Opus 5.5', 'transcript CRLF': 'Opus 5.5',
+    'transcript window starts before entry': 'Opus 5.5', 'transcript window starts at entry': 'Opus 5.5',
+    'transcript window cuts entry': 'Fable',
+    'transcript missing file': 'Fable', 'transcript empty file': 'Fable', 'transcript nothing decisive': 'Fable',
+    'transcript env disable wins': 'off',
+}
 
 # Exact bytes, so both scripts can't be wrong the same way and still match
 MODEL = f'{CYAN}Opus 5.5{R}{DIM} | {R}'
@@ -126,6 +255,8 @@ EXPECT = {
     'advisor fable': f'{MODEL}{DIM}advisor:{R} {CYAN}Fable{R}\n',
     'advisor claude-opus-5-5': f'{MODEL}{DIM}advisor:{R} {CYAN}Opus 5.5{R}\n',
     'advisor key absent': f'{MODEL}{DIM}advisor:{R} {DIM}off{R}\n',
+    'transcript opus session': f'{MODEL}{DIM}advisor:{R} {CYAN}Opus 5.5{R}\n',
+    'transcript advisor off in session': f'{MODEL}{DIM}advisor:{R} {DIM}off{R}\n',
 }
 
 CASES = [
@@ -175,6 +306,7 @@ EXPECTED_COLORS = {
     'full payload': ['effort blue', 'advisor gray', 'ctx green', '5h red', 'wk yellow'],
     'advisor in full line': ['effort blue', 'advisor bold-cyan', 'ctx green', '5h red', 'wk yellow'],
     'advisor fable': ['advisor bold-cyan'], 'advisor key absent': ['advisor gray'],
+    'transcript opus session': ['advisor bold-cyan'], 'transcript advisor off in session': ['advisor gray'],
     'effort low': ['effort plain'], 'effort medium': ['effort blue'], 'effort high': ['effort bright-blue'],
     'effort xhigh': ['effort magenta'], 'effort max': ['effort bold-bright-magenta'],
     'effort turbo': ['effort plain'], 'effort High': ['effort bright-blue'],
@@ -244,6 +376,11 @@ def main():
         if name in EXPECT:
             want = EXPECT[name].encode('utf-8')
             check(f'exact: {name}', b == want, f'      want: {want!r}\n      got : {b!r}', strip(b))
+        if name in EXPECT_ADVISOR:
+            m = re.search(r'advisor: (.*?)(?: \||$)', strip(b))
+            got = m[1] if m else None
+            check(f'advisor: {name}', got == EXPECT_ADVISOR[name],
+                  f'      want: {EXPECT_ADVISOR[name]!r}\n      got : {got!r}', strip(b))
 
     # The advisor part sits between effort and Ctx
     line = strip(run(py_cmd, CASES[0][1]))

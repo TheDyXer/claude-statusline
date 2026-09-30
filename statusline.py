@@ -40,6 +40,12 @@ EFFORT_COLORS = {
 ALIASES = ('fable', 'opus', 'sonnet', 'haiku')
 MODEL_ID = re.compile(r'claude-([a-z]+)-([0-9]{1,2})(?:-([0-9]{1,2}))?(?:-[0-9]{8})?')
 
+# How much of the session transcript to read, from the end
+TAIL_BYTES = 2 * 1024 * 1024
+COMMAND_OUTPUT = '<local-command-stdout>'
+ADVISOR_OUTPUT = COMMAND_OUTPUT + 'Advisor '
+KEEPS = re.compile(r'keeps (.+?) as its advisor model')
+
 # STATUSLINE_NOW (unix seconds) pins the clock for tests
 NOW = int(os.environ['STATUSLINE_NOW']) if os.environ.get('STATUSLINE_NOW') else int(time.time())
 
@@ -112,14 +118,90 @@ def read_settings_file(path):
     return settings if isinstance(settings, dict) else None
 
 
-def advisor_setting(data):
-    """advisorModel in Claude Code's settings order; None means off.
+def read_transcript_tail(path):
+    """The last TAIL_BYTES of the transcript as lines, oldest first; None if unreadable.
 
-    Claude Code doesn't send the advisor to status line scripts, so it's read from the same
-    files Claude Code reads. The first file that has the key decides, even if its value is null.
+    A line cut off by the start of the window is blanked. Reading one byte before the
+    window tells a cut-off line from one that starts exactly there.
+    """
+    try:
+        with open(path, 'rb') as f:
+            size = f.seek(0, os.SEEK_END)
+            start = max(0, size - TAIL_BYTES)
+            begin = start - 1 if start > 0 else 0
+            f.seek(begin)
+            data = f.read(size - begin)
+    except Exception:
+        return None
+    lines = data.decode('utf-8', 'replace').split('\n')
+    if start > 0:
+        lines[0] = ''
+    return lines
+
+
+def transcript_advisor(path):
+    """The advisor this session last used, from its transcript.
+
+    Returns a model name, '' for off, or None if nothing in the last TAIL_BYTES decides it.
+    The newest decisive entry wins: every main-thread reply records the advisor it was sent
+    with (advisorModel, left out when off), and /advisor output covers the time before the
+    next reply. The /advisor texts are from Claude Code 2.1.286.
+    """
+    lines = read_transcript_tail(path)
+    for line in reversed(lines or []):
+        line = line.rstrip('\r')
+        if not line.startswith('{') or ('"type":"assistant"' not in line and ADVISOR_OUTPUT not in line):
+            continue
+        try:
+            entry = json.loads(line)
+        except Exception:
+            continue
+        message = entry.get('message') if isinstance(entry, dict) else None
+        if not isinstance(message, dict):
+            continue
+        if entry.get('type') == 'assistant':
+            if (entry.get('isSidechain') is True or entry.get('isAbortedMidStream') is True
+                    or message.get('model') == '<synthetic>'):
+                continue
+            value = entry.get('advisorModel')
+            return value if isinstance(value, str) and value else ''
+        content = message.get('content')
+        if entry.get('type') == 'user' and isinstance(content, str) and content.startswith(ADVISOR_OUTPUT):
+            text = content[len(COMMAND_OUTPUT):].split('</local-command-stdout>')[0]
+            if text.startswith('Advisor disabled'):
+                return ''
+            m = KEEPS.search(text)
+            if m:
+                return m[1]
+            if 'will not activate' in text or 'will activate when' in text:
+                return ''
+            if text.startswith('Advisor set to '):
+                return text[len('Advisor set to '):].split('\n')[0].strip(' \t\r')
+    return None
+
+
+def session_advisor(data):
+    """The advisor this session uses; None or '' is off.
+
+    Claude Code doesn't send the advisor to status line scripts, and settings.json only holds
+    the last choice saved from any session. So the session's own transcript comes first, and
+    the settings files are the fallback (a new session before its first reply, or after /clear).
     """
     if env_truthy('CLAUDE_CODE_DISABLE_ADVISOR_TOOL'):
         return None
+    path = data.get('transcript_path')
+    if isinstance(path, str) and path:
+        found = transcript_advisor(path)
+        if found is not None:
+            return found
+    return advisor_setting(data)
+
+
+def advisor_setting(data):
+    """advisorModel in Claude Code's settings order; None means off.
+
+    The first file that has the key decides, even if its value is null.
+    """
     paths = []
     workspace = data.get('workspace')
     project = workspace.get('project_dir') if isinstance(workspace, dict) else None
@@ -184,8 +266,8 @@ def build(data, label):
         val = f'{c}{level}{RESET}' if c else level
         parts.append(f'{DIM}effort:{RESET} {val}')
 
-    # 3. Advisor (Claude Code doesn't send it, so read it from the settings files)
-    advisor = advisor_setting(data)
+    # 3. Advisor (Claude Code doesn't send it, so read it from the transcript or settings)
+    advisor = session_advisor(data)
     val = f'{BOLD_CYAN}{format_model_id(advisor)}{RESET}' if advisor else f'{DIM}off{RESET}'
     parts.append(f'{DIM}advisor:{RESET} {val}')
 
