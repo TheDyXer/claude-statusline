@@ -46,6 +46,9 @@ COMMAND_OUTPUT = '<local-command-stdout>'
 ADVISOR_OUTPUT = COMMAND_OUTPUT + 'Advisor '
 KEEPS = re.compile(r'keeps (.+?) as its advisor model')
 
+TTL = re.compile(r'([0-9]+)([smh])')
+TTL_UNITS = {'s': 1, 'm': 60, 'h': 3600}
+
 # STATUSLINE_NOW (unix seconds) pins the clock for tests
 NOW = int(os.environ['STATUSLINE_NOW']) if os.environ.get('STATUSLINE_NOW') else int(time.time())
 
@@ -102,6 +105,25 @@ def format_tokens(n):
     if t % 10 == 0:
         return f'{t // 10}{unit}'
     return f'{t // 10}.{t % 10}{unit}'
+
+
+def format_cache(pc):
+    """When the prompt cache goes cold; None hides the part.
+
+    Yellow in the last 20% of the cache's lifetime, "cold" once it has expired.
+    """
+    if not isinstance(pc, dict) or pc.get('caching_observed') is False:
+        return None
+    expires = pc.get('expires_at')
+    is_number = isinstance(expires, (int, float)) and not isinstance(expires, bool)
+    left = int(math.floor(expires)) - NOW if is_number else 0
+    if pc.get('warm') is not True or left <= 0:
+        return f'{DIM}cache{RESET} {RED}cold{RESET}'
+    m = TTL.fullmatch(pc['ttl']) if isinstance(pc.get('ttl'), str) else None
+    ttl = int(m[1]) * TTL_UNITS[m[2]] if m else 0
+    color = YELLOW if left * 5 < ttl else GREEN
+    when = datetime.fromtimestamp(NOW + left).strftime('%H:%M')
+    return f'{DIM}cache{RESET} {color}({when} {DOT} {format_countdown(NOW + left)}){RESET}'
 
 
 def env_truthy(name):
@@ -281,7 +303,12 @@ def build(data, label):
             seg += f' {DIM}({format_tokens(used)}/{format_tokens(total)}){RESET}'
         parts.append(seg)
 
-    # 5 & 6. Rate limits (5-hour session + 7-day weekly)
+    # 5. Prompt cache: when it goes cold
+    seg = format_cache(data.get('prompt_cache'))
+    if seg:
+        parts.append(seg)
+
+    # 6 & 7. Rate limits (5-hour session + 7-day weekly)
     rl = data.get('rate_limits')
     if isinstance(rl, dict):
         for seg in (format_limit('5h', rl.get('five_hour'), 18000, '%H:%M'),

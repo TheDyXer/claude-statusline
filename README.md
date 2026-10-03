@@ -1,10 +1,12 @@
 # claude-statusline
 
-A status line for [Claude Code](https://code.claude.com/docs/en/statusline) that shows your model, effort level, [advisor](https://code.claude.com/docs/en/advisor), context usage, and your 5-hour and weekly usage limits.
+A status line for [Claude Code](https://code.claude.com/docs/en/statusline) that shows your model, effort level, [advisor](https://code.claude.com/docs/en/advisor), context usage, when the [prompt cache](https://code.claude.com/docs/en/prompt-caching) goes cold, and your 5-hour and weekly usage limits.
 
 The usage limits are colored by **pace**, not just by how high the number is. They turn red when you're on track to run out before the limit resets. 60% used on the last day of the week is fine, but 45% on the first day is not.
 
 ![Three example status lines: all green, a 5-hour limit burning too fast, and a remote machine with a badge](assets/preview.svg)
+
+Already using it? Paste the [update prompt](#update) into Claude Code to get the latest version.
 
 ## Install
 
@@ -98,12 +100,17 @@ Your settings and badge label stay as they are. If you've edited the script your
 | Effort level | `effort: high` | `low` plain, `medium` blue, `high` bright blue, `xhigh` magenta, `max` bold bright magenta |
 | Advisor | `advisor: Fable 5.1` or `advisor: off` | model in bold cyan, `off` in gray |
 | Context window | `Ctx: 8% (15.5k/200k)` | green below 50%, yellow 50–79%, red 80% and up |
+| Prompt cache | `cache (14:32 · 47m)` or `cache cold` | green, yellow in the last 20% of the cache's lifetime, `cold` in red |
 | 5-hour limit | `5h 62% (16:05 · 2h 05m)` | by pace (see below) |
 | Weekly limit | `wk 41% (Wed 04:02 · 3d 14h)` | by pace (see below) |
 
-Reset times are in your local time, followed by a countdown. Once a reset time has passed, the countdown is left off.
+Reset and expiry times are in your local time, followed by a countdown. Once a reset time has passed, the countdown is left off.
 
-Parts with no data are hidden and don't leave a placeholder. The usage limits only appear on Pro and Max plans, after the first reply in a session. The effort level only appears for models that support it.
+Parts with no data are hidden and don't leave a placeholder. The usage limits only appear on Pro and Max plans, after the first reply in a session. The effort level only appears for models that support it. The cache part appears after the first reply, and is hidden if your provider doesn't report caching.
+
+### The cache part
+
+It shows when the session's prompt cache goes cold, and how long that is from now. Once it's cold, your next message re-processes the whole conversation instead of reading it from the cache, which uses more of your limits or costs more. The cache's lifetime is 1 hour or 5 minutes. A 5-minute cache is yellow only in its last minute, so with the 30-second refresh you'll see yellow for a refresh or two. The switch to `cold` happens right on time, because Claude Code redraws the status line the moment a warm cache expires.
 
 ### The advisor part
 
@@ -154,7 +161,7 @@ The thresholds are in `raw_color` and `pace_color` in `statusline.py`, and in `G
 python tests/test_parity.py --show
 ```
 
-This feeds 89 sample inputs to both scripts, at a fixed test time, with test settings files and session transcripts for the advisor part. It checks that the output matches byte for byte, and that the colors are the expected ones. It uses `pwsh` if it's installed, or Windows PowerShell otherwise. Set `PS_EXE` to choose. Without PowerShell, it runs only the Python checks.
+This feeds 107 sample inputs to both scripts, at a fixed test time, with test settings files and session transcripts for the advisor part. It checks that the output matches byte for byte, and that the colors are the expected ones. It uses `pwsh` if it's installed, or Windows PowerShell otherwise. Set `PS_EXE` to choose. Without PowerShell, it runs only the Python checks.
 
 ## License
 

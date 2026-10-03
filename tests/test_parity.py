@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PS1 = os.path.join(ROOT, 'statusline.ps1')
@@ -63,6 +64,19 @@ def ctx(pct, used=None, total=None):
     if total is not None:
         cw['context_window_size'] = total
     return json.dumps({'model': {'display_name': 'Opus 5.5'}, 'context_window': cw})
+
+
+def cache(**pc):
+    return json.dumps({'model': {'display_name': 'Opus 5.5'}, 'prompt_cache': pc})
+
+
+def warm(left, ttl='1h', **extra):
+    """A warm cache that goes cold `left` seconds after the test's "now"."""
+    return {'warm': True, 'caching_observed': True, 'ttl': ttl, 'expires_at': N + left, **extra}
+
+
+def clock(ts):
+    return time.strftime('%H:%M', time.localtime(int(ts)))
 
 
 def setting(value):
@@ -259,6 +273,35 @@ EXPECT = {
     'transcript advisor off in session': f'{MODEL}{DIM}advisor:{R} {DIM}off{R}\n',
 }
 
+GREEN, YELLOW, RED = '32', '33', '31'
+OFF_ADVISOR = f'{DIM}advisor:{R} {DIM}off{R}{DIM} | {R}'
+
+# (name, prompt_cache input or a full line, expected cache part with colors stripped
+# (None = hidden), expected color)
+CACHE_CASES = [
+    ('cache warm 1h 47m left', cache(**warm(47 * 60)), f'cache ({clock(N + 2820)} · 47m)', GREEN),
+    ('cache 1h 12m00s left green', cache(**warm(720)), f'cache ({clock(N + 720)} · 12m)', GREEN),
+    ('cache 1h 11m59s left yellow', cache(**warm(719)), f'cache ({clock(N + 719)} · 11m)', YELLOW),
+    ('cache 5m 60s left green', cache(**warm(60, ttl='5m')), f'cache ({clock(N + 60)} · 1m)', GREEN),
+    ('cache 5m 59s left yellow', cache(**warm(59, ttl='5m')), f'cache ({clock(N + 59)} · <1m)', YELLOW),
+    ('cache ttl 10m parses', cache(**warm(100, ttl='10m')), f'cache ({clock(N + 100)} · 1m)', YELLOW),
+    ('cache ttl unreadable stays green', cache(**warm(10, ttl='weird')), f'cache ({clock(N + 10)} · <1m)', GREEN),
+    ('cache ttl missing stays green', cache(warm=True, expires_at=N + 10), f'cache ({clock(N + 10)} · <1m)', GREEN),
+    ('cache float expires_at', cache(**warm(1500.9)), f'cache ({clock(N + 1500)} · 25m)', GREEN),
+    ('cache expired', cache(**warm(-1)), 'cache cold', RED),
+    ('cache expires right now', cache(**warm(0)), 'cache cold', RED),
+    ('cache not warm', cache(warm=False, caching_observed=True, ttl='1h', expires_at=None), 'cache cold', RED),
+    ('cache warm without expires_at', cache(warm=True, caching_observed=True, ttl='1h'), 'cache cold', RED),
+    ('cache warm as a string', cache(**warm(600, warm='true')), 'cache cold', RED),
+    ('cache expires_at as a string', cache(**warm(0, expires_at=str(N + 600))), 'cache cold', RED),
+    ('cache caching not reported', cache(warm=False, caching_observed=False, ttl='5m', expires_at=None), None, None),
+    ('cache not an object', json.dumps({'model': {'display_name': 'Opus 5.5'}, 'prompt_cache': 'warm'}), None, None),
+    ('cache in full line', full(prompt_cache=warm(47 * 60)), f'cache ({clock(N + 2820)} · 47m)', GREEN),
+]
+EXPECT_CACHE = {name: (part, color) for name, _, part, color in CACHE_CASES}
+EXPECT['cache warm 1h 47m left'] = f'{MODEL}{OFF_ADVISOR}{DIM}cache{R} \x1b[32m({clock(N + 2820)} · 47m){R}\n'
+EXPECT['cache expired'] = f'{MODEL}{OFF_ADVISOR}{DIM}cache{R} \x1b[31mcold{R}\n'
+
 CASES = [
     ('full payload', full()),
     ('session start', json.dumps({'model': {'display_name': 'Opus 5.5'},
@@ -297,6 +340,7 @@ CASES = [
     ('wk only (no 5h)', limits(week={'used_percentage': 41, 'resets_at': N + 3 * D})),
 ]
 # (name, payload, extra env); only the advisor cases need their own settings
+CASES += [(name, payload) for name, payload, _, _ in CACHE_CASES]
 CASES = [(name, payload, {}) for name, payload in CASES] + ADVISOR_CASES
 
 # Expected colors, so the test catches both scripts being wrong in the same way.
@@ -317,7 +361,12 @@ EXPECTED_COLORS = {
     '5h 90 always red': ['5h red'], '5h 89.5 rounds to 90': ['5h red'], '5h no resets_at': ['5h yellow'],
     '5h reset passed': ['5h green'], '5h reset beyond window': ['5h green'],
     'wk 1d 0h': ['wk green'], 'wk day 6 at 60% green': ['wk green'], 'wk day 1 at 45% red': ['wk red'],
+    'cache in full line': ['ctx green', 'cache green', '5h red'],
 }
+NAMES = {'32': 'green', '33': 'yellow', '31': 'red'}
+for _name, _, _part, _color in CACHE_CASES:
+    if _color:
+        EXPECTED_COLORS.setdefault(_name, []).append(f'cache {NAMES[_color]}')
 
 
 def colors_in(line):
@@ -325,6 +374,7 @@ def colors_in(line):
     for part, pattern in (('effort', r'effort:\x1b\[0m (?:\x1b\[([0-9;]+)m)?[A-Za-z]'),
                           ('advisor', r'advisor:\x1b\[0m \x1b\[([0-9;]+)m[A-Za-z]'),
                           ('ctx', r'Ctx:\x1b\[0m \x1b\[([0-9;]+)m\d'),
+                          ('cache', r'cache\x1b\[0m \x1b\[([0-9;]+)m[(a-z]'),
                           ('5h', r'5h\x1b\[0m \x1b\[([0-9;]+)m\d'),
                           ('wk', r'wk\x1b\[0m \x1b\[([0-9;]+)m\d')):
         m = re.search(pattern, line)
@@ -381,10 +431,18 @@ def main():
             got = m[1] if m else None
             check(f'advisor: {name}', got == EXPECT_ADVISOR[name],
                   f'      want: {EXPECT_ADVISOR[name]!r}\n      got : {got!r}', strip(b))
+        if name in EXPECT_CACHE:
+            want_part = EXPECT_CACHE[name][0]
+            got = next((p for p in strip(b).split(' | ') if p.startswith('cache ')), None)
+            check(f'cache: {name}', got == want_part, f'      want: {want_part!r}\n      got : {got!r}', strip(b))
 
     # The advisor part sits between effort and Ctx
     line = strip(run(py_cmd, CASES[0][1]))
     check('advisor placement', 'effort: medium | advisor: off | Ctx: 8%' in line, f'      got: {line}', line)
+    # The cache part sits between Ctx and 5h
+    line = strip(run(py_cmd, full(prompt_cache=warm(47 * 60))))
+    check('cache placement', 'Ctx: 8% (15.5k/200k) | cache (' in line and ' · 47m) | 5h 62%' in line,
+          f'      got: {line}', line)
 
     for name, payload in (('badge + full payload', CASES[0][1]), ('badge alone', '{}')):
         plain = run(py_cmd, payload).decode('utf-8').rstrip('\n')

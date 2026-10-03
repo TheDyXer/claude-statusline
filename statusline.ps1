@@ -79,6 +79,29 @@ function Format-Tokens {
     return "$whole.$frac$unit"
 }
 
+$ttlUnits = @{ 's' = 1; 'm' = 60; 'h' = 3600 }
+
+# When the prompt cache goes cold; $null hides the part.
+# Yellow in the last 20% of the cache's lifetime, "cold" once it has expired.
+function Format-Cache {
+    param($Cache)
+    if ($Cache -isnot [System.Management.Automation.PSCustomObject]) { return $null }
+    if ($Cache.caching_observed -is [bool] -and -not $Cache.caching_observed) { return $null }
+    $expires = $Cache.expires_at
+    $isNumber = $expires -is [int] -or $expires -is [long] -or $expires -is [double] -or $expires -is [decimal]
+    $left = if ($isNumber) { [int64][math]::Floor([double]$expires) - $now } else { [int64]0 }
+    if (-not ($Cache.warm -is [bool] -and $Cache.warm) -or $left -le 0) {
+        return "${dim}cache$reset ${red}cold$reset"
+    }
+    $ttl = 0
+    if ($Cache.ttl -is [string] -and $Cache.ttl -cmatch '^([0-9]+)([smh])\z') {
+        $ttl = [int64]$Matches[1] * $ttlUnits[$Matches[2]]
+    }
+    $color = if ($left * 5 -lt $ttl) { $yellow } else { $green }
+    $when = [DateTimeOffset]::FromUnixTimeSeconds($now + $left).ToLocalTime().ToString('HH:mm', $inv)
+    return "${dim}cache$reset $color($when $dot $(Format-Countdown -ResetsAt ($now + $left)))$reset"
+}
+
 function Test-Truthy {
     param([string]$Value)
     if (-not $Value) { return $false }
@@ -275,7 +298,11 @@ if ($cw -and $null -ne $cw.used_percentage) {
     $parts.Add($seg)
 }
 
-# 5 & 6. Rate limits (5-hour session + 7-day weekly)
+# 5. Prompt cache: when it goes cold
+$seg = Format-Cache $data.prompt_cache
+if ($seg) { $parts.Add($seg) }
+
+# 6 & 7. Rate limits (5-hour session + 7-day weekly)
 $rl = $data.rate_limits
 if ($rl) {
     $seg = Format-Limit -Name '5h' -Limit $rl.five_hour -Window 18000 -TimeFormat 'HH:mm'
