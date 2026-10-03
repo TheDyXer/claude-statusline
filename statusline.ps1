@@ -151,11 +151,16 @@ function Read-TranscriptTail {
     return , $lines
 }
 
-# The advisor this session last used, from its transcript: a model name, '' for off, or
+# /advisor notes that mean the session runs without an advisor
+$noAdvisorNotes = @('runs without the advisor', 'runs without one', 'will not activate', 'will activate when')
+# What may follow the name in "Advisor set to <name>"
+$sessionSuffixes = @(' (this session only)', ' for this session')
+
+# The advisor this session last used, from its transcript: a model name, '' for none, or
 # $null if nothing in the last $tailBytes decides it. The newest decisive entry wins: every
-# main-thread reply records the advisor it was sent with (advisorModel, left out when off),
-# and /advisor output covers the time before the next reply. The /advisor texts are from
-# Claude Code 2.1.286.
+# main-thread reply records the advisor it was sent with (advisorModel, left out when none),
+# and /advisor output covers the time before the next reply. Its note about the current
+# conversation beats the new setting. The /advisor texts are from Claude Code 2.1.288.
 function Get-TranscriptAdvisor {
     param([string]$Path)
     $lines = Read-TranscriptTail $Path
@@ -181,11 +186,16 @@ function Get-TranscriptAdvisor {
             $text = $content.Substring($commandOutput.Length)
             $end = $text.IndexOf('</local-command-stdout>', $ordinal)
             if ($end -ge 0) { $text = $text.Substring(0, $end) }
+            if ($text -cmatch 'keeps (.+?) as its advisor(?: model)? until') { return $Matches[1] }
+            foreach ($note in $noAdvisorNotes) { if ($text.Contains($note)) { return '' } }
             if ($text.StartsWith('Advisor disabled', $ordinal)) { return '' }
-            if ($text -cmatch 'keeps (.+?) as its advisor model') { return $Matches[1] }
-            if ($text.Contains('will not activate') -or $text.Contains('will activate when')) { return '' }
             if ($text.StartsWith('Advisor set to ', $ordinal)) {
-                return $text.Substring('Advisor set to '.Length).Split([char]10)[0].Trim(" `t`r")
+                $name = $text.Substring('Advisor set to '.Length).Split([char]10)[0]
+                foreach ($suffix in $sessionSuffixes) {
+                    $k = $name.IndexOf($suffix, $ordinal)
+                    if ($k -ge 0) { $name = $name.Substring(0, $k) }
+                }
+                return $name.Trim(" `t`r")
             }
         }
     }
@@ -284,7 +294,9 @@ if ($data.effort -and $data.effort.level) {
 
 # 3. Advisor (Claude Code doesn't send it, so read it from the transcript or settings)
 $advisor = Get-SessionAdvisor $data
-$val = if ($advisor) { "$boldCyan$(Format-ModelId $advisor)$reset" } else { "${dim}off$reset" }
+$val = if ($advisor) { "$boldCyan$(Format-ModelId $advisor)$reset" }
+       elseif (Test-Truthy $env:CLAUDE_CODE_DISABLE_ADVISOR_TOOL) { "${dim}off$reset" }
+       else { "${yellow}none selected$reset" }
 $parts.Add("${dim}advisor:$reset $val")
 
 # 4. Context window usage

@@ -44,7 +44,11 @@ MODEL_ID = re.compile(r'claude-([a-z]+)-([0-9]{1,2})(?:-([0-9]{1,2}))?(?:-[0-9]{
 TAIL_BYTES = 2 * 1024 * 1024
 COMMAND_OUTPUT = '<local-command-stdout>'
 ADVISOR_OUTPUT = COMMAND_OUTPUT + 'Advisor '
-KEEPS = re.compile(r'keeps (.+?) as its advisor model')
+KEEPS = re.compile(r'keeps (.+?) as its advisor(?: model)? until')
+# /advisor notes that mean the session runs without an advisor
+NO_ADVISOR_NOTES = ('runs without the advisor', 'runs without one', 'will not activate', 'will activate when')
+# What may follow the name in "Advisor set to <name>"
+SESSION_SUFFIXES = (' (this session only)', ' for this session')
 
 TTL = re.compile(r'([0-9]+)([smh])')
 TTL_UNITS = {'s': 1, 'm': 60, 'h': 3600}
@@ -164,10 +168,11 @@ def read_transcript_tail(path):
 def transcript_advisor(path):
     """The advisor this session last used, from its transcript.
 
-    Returns a model name, '' for off, or None if nothing in the last TAIL_BYTES decides it.
+    Returns a model name, '' for none, or None if nothing in the last TAIL_BYTES decides it.
     The newest decisive entry wins: every main-thread reply records the advisor it was sent
-    with (advisorModel, left out when off), and /advisor output covers the time before the
-    next reply. The /advisor texts are from Claude Code 2.1.286.
+    with (advisorModel, left out when none), and /advisor output covers the time before the
+    next reply. Its note about the current conversation beats the new setting. The /advisor
+    texts are from Claude Code 2.1.288.
     """
     lines = read_transcript_tail(path)
     for line in reversed(lines or []):
@@ -190,15 +195,16 @@ def transcript_advisor(path):
         content = message.get('content')
         if entry.get('type') == 'user' and isinstance(content, str) and content.startswith(ADVISOR_OUTPUT):
             text = content[len(COMMAND_OUTPUT):].split('</local-command-stdout>')[0]
-            if text.startswith('Advisor disabled'):
-                return ''
             m = KEEPS.search(text)
             if m:
                 return m[1]
-            if 'will not activate' in text or 'will activate when' in text:
+            if any(note in text for note in NO_ADVISOR_NOTES) or text.startswith('Advisor disabled'):
                 return ''
             if text.startswith('Advisor set to '):
-                return text[len('Advisor set to '):].split('\n')[0].strip(' \t\r')
+                name = text[len('Advisor set to '):].split('\n')[0]
+                for suffix in SESSION_SUFFIXES:
+                    name = name.split(suffix)[0]
+                return name.strip(' \t\r')
     return None
 
 
@@ -290,7 +296,12 @@ def build(data, label):
 
     # 3. Advisor (Claude Code doesn't send it, so read it from the transcript or settings)
     advisor = session_advisor(data)
-    val = f'{BOLD_CYAN}{format_model_id(advisor)}{RESET}' if advisor else f'{DIM}off{RESET}'
+    if advisor:
+        val = f'{BOLD_CYAN}{format_model_id(advisor)}{RESET}'
+    elif env_truthy('CLAUDE_CODE_DISABLE_ADVISOR_TOOL'):
+        val = f'{DIM}off{RESET}'
+    else:
+        val = f'{YELLOW}none selected{RESET}'
     parts.append(f'{DIM}advisor:{RESET} {val}')
 
     # 4. Context window usage

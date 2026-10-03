@@ -167,6 +167,25 @@ UNSUPPORTED = ('Advisor set to Opus 5.5\nHaiku 3 (claude-3-haiku) does not suppo
                'activate when you switch to a supported main model.')
 
 
+# Notes Claude Code 2.1.288 adds after /advisor
+KEEPS_NEW = ('Advisor set to Opus 5.5\nThe current conversation keeps Fable 5.1 as its advisor until /clear or '
+             '/compact, so the prompt it has already sent stays unchanged; the new setting applies from there and '
+             'in new conversations.')
+RUNS_WITHOUT = ('Advisor set to Opus 5.5\nThe current conversation runs without the advisor until /clear or '
+                '/compact, so the prompt it has already sent stays unchanged; the new setting applies from there '
+                'and in new conversations.')
+REFUSED = ('Advisor set to Opus 5.5\nThe API refused the advisor for the current conversation, so it runs '
+           'without one until /clear or /compact; the setting applies from there and in new conversations.')
+DISABLED_KEEPS = ('Advisor disabled\nThe current conversation keeps Fable 5.1 as its advisor until /clear or '
+                  '/compact, so the prompt it has already sent stays unchanged; the new setting applies from there '
+                  'and in new conversations.')
+WEAKER_KEEPS = ('Advisor set to Sonnet 5\nNote: Sonnet 5 is less capable than the current main model (Opus 5.5), '
+                'so the advisor will not activate. Choose a more capable advisor, or switch to a smaller main '
+                'model.\nThe current conversation keeps Fable 5.1 as its advisor until /clear or /compact, so the '
+                'prompt it has already sent stays unchanged; the new setting applies from there and in new '
+                'conversations.')
+
+
 OFF = {'CLAUDE_CODE_DISABLE_ADVISOR_TOOL': '1'}
 
 ADVISOR_CASES = [
@@ -218,6 +237,22 @@ ADVISOR_CASES = [
             transcript=jl(reply('claude-fable-5-1'), command_output(WEAKER))),
     advisor('transcript /advisor will activate when', user=setting('fable'),
             transcript=jl(reply('claude-fable-5-1'), command_output(UNSUPPORTED))),
+    advisor('transcript /advisor keeps note 2.1.288', user=setting('fable'),
+            transcript=jl(reply('claude-fable-5-1'), command_output(KEEPS_NEW))),
+    advisor('transcript /advisor runs without', user=setting('fable'),
+            transcript=jl(reply(), command_output(RUNS_WITHOUT))),
+    advisor('transcript /advisor refused', user=setting('fable'),
+            transcript=jl(reply(), command_output(REFUSED))),
+    advisor('transcript /advisor disabled keeps', user=setting('fable'),
+            transcript=jl(reply('claude-fable-5-1'), command_output(DISABLED_KEEPS))),
+    advisor('transcript /advisor weaker keeps', user=setting('fable'),
+            transcript=jl(reply('claude-fable-5-1'), command_output(WEAKER_KEEPS))),
+    advisor('transcript /advisor for this session', user=setting('fable'),
+            transcript=jl(reply('claude-fable-5-1'), command_output(
+                'Advisor set to Opus 5.5 for this session — run /advisor in the terminal to change your '
+                'default'))),
+    advisor('transcript /advisor this session only', user=setting('fable'),
+            transcript=jl(reply('claude-fable-5-1'), command_output('Advisor set to Opus 5.5 (this session only)'))),
     advisor('transcript reply after /advisor wins', user=setting('opus'),
             transcript=jl(command_output('Advisor set to Opus 5.5'), reply('claude-fable-5-1'))),
     advisor('transcript tool result ignored', user=setting('opus'),
@@ -239,42 +274,48 @@ ADVISOR_CASES = [
 # Expected advisor for every advisor case: a script that ignored the transcript or settings
 # would still match the other script, so parity alone can't catch it
 EXPECT_ADVISOR = {
-    'advisor no settings files': 'off', 'advisor key absent': 'off', 'advisor fable': 'Fable',
+    'advisor no settings files': 'none selected', 'advisor key absent': 'none selected', 'advisor fable': 'Fable',
     'advisor opus': 'Opus', 'advisor sonnet': 'Sonnet', 'advisor claude-opus-5-5': 'Opus 5.5',
     'advisor claude-fable-5-1': 'Fable 5.1', 'advisor claude-sonnet-5': 'Sonnet 5',
     'advisor dated haiku id': 'Haiku 4.5', 'advisor uppercase alias': 'Fable', 'advisor padded alias': 'Fable',
-    'advisor unknown name': 'my-gateway-model', 'advisor null': 'off', 'advisor empty string': 'off',
-    'advisor number': 'off', 'advisor wrong key case': 'off', 'advisor malformed user file': 'off',
-    'advisor user file with BOM': 'Opus', 'advisor top-level array': 'off', 'advisor local beats user': 'Opus',
+    'advisor unknown name': 'my-gateway-model', 'advisor null': 'none selected', 'advisor empty string': 'none selected',
+    'advisor number': 'none selected', 'advisor wrong key case': 'none selected', 'advisor malformed user file': 'none selected',
+    'advisor user file with BOM': 'Opus', 'advisor top-level array': 'none selected', 'advisor local beats user': 'Opus',
     'advisor project beats user': 'Sonnet', 'advisor local beats project': 'Opus 5.5',
-    'advisor local null turns off': 'off', 'advisor project without key': 'Fable',
+    'advisor local null turns off': 'none selected', 'advisor project without key': 'Fable',
     'advisor malformed local skipped': 'Fable', 'advisor disabled by env 1': 'off',
     'advisor disabled by env true': 'off', 'advisor env 0 keeps it': 'Fable', 'advisor in full line': 'Fable',
-    'transcript opus session': 'Opus 5.5', 'transcript advisor off in session': 'off',
+    'transcript opus session': 'Opus 5.5', 'transcript advisor off in session': 'none selected',
     'transcript skips synthetic': 'Opus 5.5', 'transcript skips aborted': 'Opus 5.5',
     'transcript skips sidechain': 'Opus 5.5', 'transcript /advisor set to': 'Opus 5.5',
-    'transcript /advisor disabled': 'off', 'transcript /advisor keeps note': 'Opus 5.5',
-    'transcript /advisor will not activate': 'off', 'transcript /advisor will activate when': 'off',
+    'transcript /advisor disabled': 'none selected', 'transcript /advisor keeps note': 'Opus 5.5',
+    'transcript /advisor will not activate': 'none selected', 'transcript /advisor will activate when': 'none selected',
     'transcript reply after /advisor wins': 'Fable 5.1', 'transcript tool result ignored': 'Fable 5.1',
     'transcript half-written last line': 'Opus 5.5', 'transcript CRLF': 'Opus 5.5',
     'transcript window starts before entry': 'Opus 5.5', 'transcript window starts at entry': 'Opus 5.5',
     'transcript window cuts entry': 'Fable',
     'transcript missing file': 'Fable', 'transcript empty file': 'Fable', 'transcript nothing decisive': 'Fable',
+    'transcript /advisor keeps note 2.1.288': 'Fable 5.1', 'transcript /advisor runs without': 'none selected',
+    'transcript /advisor refused': 'none selected', 'transcript /advisor disabled keeps': 'Fable 5.1',
+    'transcript /advisor weaker keeps': 'Fable 5.1', 'transcript /advisor for this session': 'Opus 5.5',
+    'transcript /advisor this session only': 'Opus 5.5',
     'transcript env disable wins': 'off',
 }
 
 # Exact bytes, so both scripts can't be wrong the same way and still match
 MODEL = f'{CYAN}Opus 5.5{R}{DIM} | {R}'
+NONE = f'\x1b[33mnone selected{R}'
 EXPECT = {
     'advisor fable': f'{MODEL}{DIM}advisor:{R} {CYAN}Fable{R}\n',
     'advisor claude-opus-5-5': f'{MODEL}{DIM}advisor:{R} {CYAN}Opus 5.5{R}\n',
-    'advisor key absent': f'{MODEL}{DIM}advisor:{R} {DIM}off{R}\n',
+    'advisor key absent': f'{MODEL}{DIM}advisor:{R} {NONE}\n',
     'transcript opus session': f'{MODEL}{DIM}advisor:{R} {CYAN}Opus 5.5{R}\n',
-    'transcript advisor off in session': f'{MODEL}{DIM}advisor:{R} {DIM}off{R}\n',
+    'transcript advisor off in session': f'{MODEL}{DIM}advisor:{R} {NONE}\n',
+    'advisor disabled by env 1': f'{MODEL}{DIM}advisor:{R} {DIM}off{R}\n',
 }
 
 GREEN, YELLOW, RED = '32', '33', '31'
-OFF_ADVISOR = f'{DIM}advisor:{R} {DIM}off{R}{DIM} | {R}'
+OFF_ADVISOR = f'{DIM}advisor:{R} {NONE}{DIM} | {R}'
 
 # (name, prompt_cache input or a full line, expected cache part with colors stripped
 # (None = hidden), expected color)
@@ -347,10 +388,12 @@ CASES = [(name, payload, {}) for name, payload in CASES] + ADVISOR_CASES
 COLOR_NAMES = {'32': 'green', '33': 'yellow', '31': 'red', '34': 'blue', '94': 'bright-blue',
                '35': 'magenta', '1;95': 'bold-bright-magenta', '1;36': 'bold-cyan', '90': 'gray'}
 EXPECTED_COLORS = {
-    'full payload': ['effort blue', 'advisor gray', 'ctx green', '5h red', 'wk yellow'],
+    'full payload': ['effort blue', 'advisor yellow', 'ctx green', '5h red', 'wk yellow'],
     'advisor in full line': ['effort blue', 'advisor bold-cyan', 'ctx green', '5h red', 'wk yellow'],
-    'advisor fable': ['advisor bold-cyan'], 'advisor key absent': ['advisor gray'],
-    'transcript opus session': ['advisor bold-cyan'], 'transcript advisor off in session': ['advisor gray'],
+    'advisor fable': ['advisor bold-cyan'], 'advisor key absent': ['advisor yellow'],
+    'transcript opus session': ['advisor bold-cyan'], 'transcript advisor off in session': ['advisor yellow'],
+    'advisor disabled by env 1': ['advisor gray'], 'transcript /advisor runs without': ['advisor yellow'],
+    'transcript /advisor keeps note 2.1.288': ['advisor bold-cyan'],
     'effort low': ['effort plain'], 'effort medium': ['effort blue'], 'effort high': ['effort bright-blue'],
     'effort xhigh': ['effort magenta'], 'effort max': ['effort bold-bright-magenta'],
     'effort turbo': ['effort plain'], 'effort High': ['effort bright-blue'],
@@ -438,7 +481,7 @@ def main():
 
     # The advisor part sits between effort and Ctx
     line = strip(run(py_cmd, CASES[0][1]))
-    check('advisor placement', 'effort: medium | advisor: off | Ctx: 8%' in line, f'      got: {line}', line)
+    check('advisor placement', 'effort: medium | advisor: none selected | Ctx: 8%' in line, f'      got: {line}', line)
     # The cache part sits between Ctx and 5h
     line = strip(run(py_cmd, full(prompt_cache=warm(47 * 60))))
     check('cache placement', 'Ctx: 8% (15.5k/200k) | cache (' in line and ' · 47m) | 5h 62%' in line,

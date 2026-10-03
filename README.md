@@ -28,7 +28,7 @@ Install the status line from https://github.com/TheDyXer/claude-statusline for m
 4. Badge label: none
    (If this says a name instead of "none", add --label NAME for Python or -Label NAME for PowerShell to the end of the command.)
 5. Test the command by piping in {"model":{"display_name":"Opus"},"context_window":{"used_percentage":12,"total_input_tokens":24000,"context_window_size":200000}}
-   It should print "Opus | advisor: off | Ctx: 12% (24k/200k)" with color codes. If I have an advisor set, it shows that model instead of "off". Show me the result.
+   It should print "Opus | advisor: none selected | Ctx: 12% (24k/200k)" with color codes. If I have an advisor set, it shows that model instead of "none selected". Show me the result.
 ```
 
 The status line appears after your next message. To show a badge, for example to tell a remote server apart from your own computer, change `Badge label: none` to a name before pasting.
@@ -98,7 +98,7 @@ Your settings and badge label stay as they are. If you've edited the script your
 | Badge (optional) | `server` | black on orange, only with `--label` / `-Label` |
 | Model | `Opus 5.5` | bold cyan |
 | Effort level | `effort: high` | `low` plain, `medium` blue, `high` bright blue, `xhigh` magenta, `max` bold bright magenta |
-| Advisor | `advisor: Fable 5.1` or `advisor: off` | model in bold cyan, `off` in gray |
+| Advisor | `advisor: Fable 5.1` or `advisor: none selected` | model in bold cyan, `none selected` in yellow |
 | Context window | `Ctx: 8% (15.5k/200k)` | green below 50%, yellow 50–79%, red 80% and up |
 | Prompt cache | `cache (14:32 · 47m)` or `cache cold` | green, yellow in the last 20% of the cache's lifetime, `cold` in red |
 | 5-hour limit | `5h 62% (16:05 · 2h 05m)` | by pace (see below) |
@@ -118,15 +118,19 @@ The advisor part is always shown, and each session shows its own advisor. If you
 
 Claude Code doesn't send the advisor to status line scripts, and `settings.json` only holds the last choice saved from any session. So the script reads it from two places:
 
-1. **This session's transcript** (the file in `transcript_path`, last 2 MB). Every reply records the advisor it was sent with, and nothing when the advisor is off. `/advisor` also writes a message there right away, so a change shows up before the next reply. This covers `claude --advisor` sessions too, from the first reply on.
+1. **This session's transcript** (the file in `transcript_path`, last 2 MB). Every reply records the advisor it was sent with, and nothing when there's none. `/advisor` also writes a message there right away, so a change shows up before the next reply. This covers `claude --advisor` sessions too, from the first reply on.
 2. **The settings files**, when the transcript doesn't say yet: a new session before its first reply, or right after `/clear`. These are checked in the same order Claude Code uses:
    1. `.claude/settings.local.json` in the project
    2. `.claude/settings.json` in the project
    3. `~/.claude/settings.json`, or the folder in `CLAUDE_CONFIG_DIR`
 
-The line catches up within 30 seconds of a change. A short name like `fable` shows as `Fable`, and a full model ID like `claude-opus-5-5` shows as `Opus 5.5`. It shows `off` when the session's replies go out without an advisor, when nothing sets one, or when `CLAUDE_CODE_DISABLE_ADVISOR_TOOL` is set in the environment the status line runs in.
+The line catches up within 30 seconds of a change. A short name like `fable` shows as `Fable`, and a full model ID like `claude-opus-5-5` shows as `Opus 5.5`.
 
-The transcript format and the `/advisor` messages come from Claude Code 2.1.286. If a later version changes them, the script falls back to the settings files, and the tests (`tests/test_parity.py`) show what broke.
+It shows `none selected` in yellow when the session's replies go out without an advisor, or when nothing sets one. That includes picking an advisor the main model can't use, since the replies then go out without it. When `CLAUDE_CODE_DISABLE_ADVISOR_TOOL` is set in the environment the status line runs in, advisors are turned off entirely and it shows a gray `off`.
+
+Sometimes `/advisor` saves a new choice but says the current conversation keeps its old advisor, or runs without one, until `/clear` or `/compact`. The line then shows what the conversation actually uses.
+
+The transcript format and the `/advisor` messages come from Claude Code 2.1.288. If a later version changes them, the script falls back to the settings files, and the tests (`tests/test_parity.py`) show what broke.
 
 ## How pace colors work
 
@@ -161,7 +165,7 @@ The thresholds are in `raw_color` and `pace_color` in `statusline.py`, and in `G
 python tests/test_parity.py --show
 ```
 
-This feeds 107 sample inputs to both scripts, at a fixed test time, with test settings files and session transcripts for the advisor part. It checks that the output matches byte for byte, and that the colors are the expected ones. It uses `pwsh` if it's installed, or Windows PowerShell otherwise. Set `PS_EXE` to choose. Without PowerShell, it runs only the Python checks.
+This feeds 114 sample inputs to both scripts, at a fixed test time, with test settings files and session transcripts for the advisor part. It checks that the output matches byte for byte, and that the colors are the expected ones. It uses `pwsh` if it's installed, or Windows PowerShell otherwise. Set `PS_EXE` to choose. Without PowerShell, it runs only the Python checks.
 
 ## License
 
